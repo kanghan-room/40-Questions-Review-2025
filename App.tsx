@@ -4,7 +4,7 @@ import { QUESTIONS } from './constants';
 import { Welcome } from './components/Welcome';
 import { QuestionFlow } from './components/QuestionFlow';
 import { SummaryBoard } from './components/SummaryBoard';
-import { generateYearSummary, extractAnswersFromData } from './services/geminiService';
+import { generateYearSummary, extractAnswersFromData } from './services/openaiService';
 import { Loader2 } from 'lucide-react';
 
 const App: React.FC = () => {

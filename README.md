@@ -15,6 +15,9 @@ View your app in AI Studio: https://ai.studio/apps/drive/1gdkL8sqByMgC3dgVhVL9pU
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy `.env.example` to `.env.local` and set:
+   - `VITE_BIGMODEL_API_KEY` to your key
+   - (optional) `VITE_BIGMODEL_BASE_URL` if you use a custom endpoint, default: `https://open.bigmodel.cn/api/paas/v4/chat/completions`
+   - (optional) `VITE_OPENAI_MODEL` if you want a different model, default: `glm-4-flash`
 3. Run the app:
    `npm run dev`

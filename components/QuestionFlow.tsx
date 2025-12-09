@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ArrowRight, Sparkles, ChevronLeft } from 'lucide-react';
 import { Question, Answers } from '../types';
 import { QUESTIONS } from '../constants';
-import { getInspiration } from '../services/geminiService';
+import { getInspiration } from '../services/openaiService';
 
 interface Props {
   answers: Answers;
