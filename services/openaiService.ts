@@ -2,38 +2,75 @@ import OpenAI from "openai";
 import { Answers, Question, YearSummary } from "../types";
 import { QUESTIONS } from "../constants";
 
-const apiKey =
-  (import.meta as any)?.env?.VITE_BIGMODEL_API_KEY ||
-  (import.meta as any)?.env?.VITE_OPENAI_API_KEY ||
-  process.env.OPENAI_API_KEY ||
-  process.env.API_KEY;
-const baseURL =
-  (import.meta as any)?.env?.VITE_BIGMODEL_BASE_URL ||
-  (import.meta as any)?.env?.VITE_OPENAI_BASE_URL ||
-  process.env.OPENAI_BASE_URL ||
-  "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+// Resolve env vars at module init so Vite injects .env.local values at build/dev time.
+const metaEnv = (import.meta as any)?.env ?? {};
+const nodeEnv = typeof process !== "undefined" ? (process as any).env : undefined;
+const globalEnv = (globalThis as any) ?? {};
 
-let ai: OpenAI | null = null;
+const API_KEY =
+  metaEnv.VITE_BIGMODEL_API_KEY ||
+  metaEnv.VITE_OPENAI_API_KEY ||
+  metaEnv.OPENAI_API_KEY ||
+  metaEnv.API_KEY ||
+  nodeEnv?.VITE_BIGMODEL_API_KEY ||
+  nodeEnv?.VITE_OPENAI_API_KEY ||
+  nodeEnv?.OPENAI_API_KEY ||
+  nodeEnv?.API_KEY ||
+  globalEnv.VITE_BIGMODEL_API_KEY ||
+  globalEnv.VITE_OPENAI_API_KEY ||
+  globalEnv.OPENAI_API_KEY ||
+  globalEnv.API_KEY;
 
-const model =
-  (import.meta as any)?.env?.VITE_OPENAI_MODEL ||
-  process.env.OPENAI_MODEL ||
+const BASE_URL =
+  metaEnv.VITE_BIGMODEL_BASE_URL ||
+  metaEnv.VITE_OPENAI_BASE_URL ||
+  metaEnv.OPENAI_BASE_URL ||
+  nodeEnv?.VITE_BIGMODEL_BASE_URL ||
+  nodeEnv?.VITE_OPENAI_BASE_URL ||
+  nodeEnv?.OPENAI_BASE_URL ||
+  globalEnv.VITE_BIGMODEL_BASE_URL ||
+  globalEnv.VITE_OPENAI_BASE_URL ||
+  globalEnv.OPENAI_BASE_URL ||
+  "https://open.bigmodel.cn/api/paas/v4/";
+
+const MODEL =
+  metaEnv.VITE_OPENAI_MODEL ||
+  metaEnv.OPENAI_MODEL ||
+  nodeEnv?.VITE_OPENAI_MODEL ||
+  nodeEnv?.OPENAI_MODEL ||
+  globalEnv.VITE_OPENAI_MODEL ||
+  globalEnv.OPENAI_MODEL ||
   "glm-4-flash";
-const ensureApiKey = () => {
-  if (!apiKey) {
-    throw new Error("Missing OpenAI API key. Set VITE_OPENAI_API_KEY or OPENAI_API_KEY.");
-  }
+
+const getModel = () => MODEL;
+
+const sanitizeBaseURL = (url: string): string => {
+  // Avoid double appending `/chat/completions` by trimming if user passed a full endpoint.
+  return url.replace(/\/chat\/completions\/?$/i, "/");
 };
 
+let ai: OpenAI | null = null;
+let cachedApiKey: string | undefined;
+let cachedBaseURL: string | undefined;
+
 const getClient = () => {
-  ensureApiKey();
-  if (!ai) {
+  const apiKey = API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing OpenAI API key. Please set VITE_BIGMODEL_API_KEY in .env.local.");
+  }
+
+  const baseURL = sanitizeBaseURL(BASE_URL);
+
+  if (!ai || apiKey !== cachedApiKey || baseURL !== cachedBaseURL) {
     ai = new OpenAI({
       apiKey,
       baseURL,
       dangerouslyAllowBrowser: true,
     });
+    cachedApiKey = apiKey;
+    cachedBaseURL = baseURL;
   }
+
   return ai;
 };
 
@@ -57,8 +94,10 @@ const getTextFromContent = (
 const decodeBase64ToText = (base64: string): string => {
   if (!base64) return "";
   try {
-    // atob is available in browsers
-    return atob(base64);
+    // In browsers, atob returns a Latin-1 string; decode bytes with UTF-8 to avoid mojibake.
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes);
   } catch {
     try {
       return Buffer.from(base64, "base64").toString("utf-8");
@@ -68,7 +107,37 @@ const decodeBase64ToText = (base64: string): string => {
   }
 };
 
+const buildFallbackAnswers = (text: string): Answers => {
+  const clean = text?.trim();
+  if (!clean) return {};
+  // Place entire content under Q1 as a minimal fallback so the app can proceed.
+  return { 1: clean };
+};
+
+// Parse plain text following the demo format: "1. Question\n\nAnswer\n\n2. ..."
+const parsePlainTextAnswers = (text: string): Answers => {
+  if (!text) return {};
+  const cleaned = text.replace(/\r\n/g, "\n");
+
+  const regex =
+    /(\d{1,2})\.\s*[^\n]*\n+([\s\S]*?)(?=\n\d{1,2}\.\s|\nPart\s*\d+\.|$)/g;
+  const answers: Answers = {};
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(cleaned)) !== null) {
+    const id = Number(match[1]);
+    if (!id || id < 1 || id > 40) continue;
+    const answer = match[2].trim();
+    if (answer) {
+      answers[id] = answer;
+    }
+  }
+
+  return answers;
+};
+
 export const getInspiration = async (question: Question): Promise<string> => {
+  const model = getModel();
   try {
     const response = await getClient().chat.completions.create({
       model,
@@ -96,6 +165,7 @@ export const getInspiration = async (question: Question): Promise<string> => {
 
 export const extractAnswersFromData = async (base64Data: string, mimeType: string): Promise<Answers> => {
   const questionsList = QUESTIONS.map(q => `${q.id}. ${q.text}`).join("\n");
+  const model = getModel();
   
   const prompt = `
     Task: Extract answers from the provided user document (which may be an image, PDF, or text).
@@ -117,6 +187,13 @@ export const extractAnswersFromData = async (base64Data: string, mimeType: strin
   const dataUrl = `data:${mimeType || "text/plain"};base64,${base64Data}`;
   const textPayload = !isImage ? decodeBase64ToText(base64Data) : "";
   const truncatedText = textPayload ? textPayload.slice(0, 8000) : "";
+
+  // For plain text uploads, skip LLM parsing and just return the raw content.
+  if (!isImage && textPayload && mimeType?.startsWith("text/")) {
+    const parsed = parsePlainTextAnswers(textPayload);
+    if (Object.keys(parsed).length > 0) return parsed;
+    return buildFallbackAnswers(textPayload);
+  }
 
   try {
     const response = await getClient().chat.completions.create({
@@ -178,7 +255,13 @@ export const extractAnswersFromData = async (base64Data: string, mimeType: strin
     );
     if (!jsonText) throw new Error("No response text");
     
-    const result = JSON.parse(jsonText);
+    let result: any;
+    try {
+      result = JSON.parse(jsonText);
+    } catch (parseError) {
+      console.warn("Extraction JSON parse failed, returning raw text.", parseError);
+      return buildFallbackAnswers(textPayload || jsonText);
+    }
     const answerList = result.list || [];
 
     // Convert list to map
@@ -193,6 +276,8 @@ export const extractAnswersFromData = async (base64Data: string, mimeType: strin
 
   } catch (error) {
     console.error("Extraction Error", error);
+    const fallback = buildFallbackAnswers(textPayload);
+    if (Object.keys(fallback).length > 0) return fallback;
     throw error;
   }
 };
@@ -253,6 +338,7 @@ export const generateYearSummary = async (answers: Answers, questions: Question[
   `;
 
   try {
+    const model = getModel();
     const response = await getClient().chat.completions.create({
       model,
       temperature: 0.7,
